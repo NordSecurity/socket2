@@ -27,6 +27,10 @@ use crate::{Domain, Protocol, SockAddr, TcpKeepalive, Type};
 #[cfg(not(target_os = "redox"))]
 use crate::{MaybeUninitSlice, MsgHdr, RecvFlags};
 
+define_mmsg_if_supported! {
+    use crate::{MMsgHdr, MMsgHdrMut};
+}
+
 /// Owned wrapper around a system socket.
 ///
 /// This type simply wraps an instance of a file descriptor (`c_int`) on Unix
@@ -634,6 +638,19 @@ impl Socket {
         sys::recvmsg(self.as_raw(), msg, flags)
     }
 
+    define_mmsg_if_supported! {
+        /// Receive multiple messages on the socket using a single system call.
+        #[doc = man_links!(unix: recvmmsg(2))]
+        pub fn recvmmsg(
+            &self,
+            msgvec: &mut [MMsgHdrMut<'_, '_, '_>],
+            flags: c_int,
+            timeout: Option<Duration>,
+        ) -> io::Result<usize> {
+            sys::recvmmsg(self.as_raw(), msgvec, flags, timeout)
+        }
+    }
+
     /// Sends data on the socket to a connected peer.
     ///
     /// This is typically used on TCP sockets or datagram sockets which have
@@ -734,6 +751,14 @@ impl Socket {
     #[cfg(not(target_os = "redox"))]
     pub fn sendmsg(&self, msg: &MsgHdr<'_, '_, '_>, flags: sys::c_int) -> io::Result<usize> {
         sys::sendmsg(self.as_raw(), msg, flags)
+    }
+
+    define_mmsg_if_supported! {
+        /// Send multiple messages on the socket using a single system call.
+        #[doc = man_links!(unix: sendmmsg(2))]
+        pub fn sendmmsg(&self, msgvec: &mut [MMsgHdr<'_, '_, '_>], flags: c_int) -> io::Result<usize> {
+            sys::sendmmsg(self.as_raw(), msgvec, flags)
+        }
     }
 }
 
