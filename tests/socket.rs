@@ -770,6 +770,47 @@ fn sendmsg() {
 }
 
 #[test]
+#[cfg(all(feature = "all", any(target_os = "linux", target_os = "android")))]
+fn send_and_recv_batched_msgs() {
+    let (socket_a, socket_b) = udp_pair_unconnected();
+
+    const DATA: &[u8] = b"Hello, World!";
+
+    let addr_b = socket_b.local_addr().unwrap();
+    let mut batched_msgs = Vec::new();
+    let mut recv_batched_msgs = Vec::new();
+    for _ in 0..10 {
+        let bufs = &[IoSlice::new(DATA)];
+        batched_msgs.push(socket2::MMsgHdr::new(
+            socket2::MsgHdr::new().with_addr(&addr_b).with_buffers(bufs),
+        ));
+
+        let mut buf = [MaybeUninit::new(0u8); DATA.len()];
+        let recv_bufs = MaybeUninitSlice::new(buf.as_mut_slice());
+        recv_batched_msgs.push(socket2::MMsgHdrMut::new(
+            socket2::MsgHdrMut::new().with_buffers(&mut [recv_bufs]),
+        ));
+    }
+
+    let sent = socket_a.sendmmsg(batched_msgs.as_mut_slice(), 0).unwrap();
+
+    let mut sent_data = 0;
+    // Calculate transmitted length
+    for msg in batched_msgs.iter().take(sent) {
+        sent_data += msg.transmitted_bytes()
+    }
+    assert!(sent_data as usize == 10 * DATA.len());
+
+    let recvd = socket_b
+        .recvmmsg(recv_batched_msgs.as_mut_slice(), 0, None)
+        .unwrap();
+
+    assert!(recvd == sent);
+
+    assert!(recv_batched_msgs[0].recieved_bytes() == DATA.len().try_into().unwrap());
+}
+
+#[test]
 #[cfg(not(any(target_os = "redox", target_os = "vita")))]
 fn recv_vectored_truncated() {
     let (socket_a, socket_b) = udp_pair_connected();

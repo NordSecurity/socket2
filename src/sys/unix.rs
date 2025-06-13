@@ -80,6 +80,13 @@ use crate::{Domain, Protocol, SockAddr, TcpKeepalive, Type};
 #[cfg(not(target_os = "redox"))]
 use crate::{MsgHdr, MsgHdrMut, RecvFlags};
 
+#[cfg(all(feature = "all", any(target_os = "linux", target_os = "android",)))]
+use crate::{MMsgHdr, MMsgHdrMut};
+
+// Used in `MMsgHdr`.
+#[cfg(any(target_os = "linux", target_os = "android",))]
+pub(crate) use libc::mmsghdr;
+
 pub(crate) use libc::c_int;
 
 // Used in `Domain`.
@@ -1076,6 +1083,35 @@ pub(crate) fn recvmsg(
     syscall!(recvmsg(fd, &mut msg.inner, flags)).map(|n| n as usize)
 }
 
+#[cfg(all(feature = "all", any(target_os = "linux", target_os = "android",)))]
+/// This emits all the messages in a single syscall
+pub(crate) fn recvmmsg(
+    fd: Socket,
+    msgvec: &mut [MMsgHdrMut<'_, '_, '_>],
+    flags: c_int,
+    timeout: Option<Duration>,
+) -> io::Result<usize> {
+    if cfg!(target_env = "musl") {
+        debug_assert!(flags >= 0, "socket flags must be non-negative");
+    }
+
+    let mut timeout = timeout.map(into_timespec);
+    let timeout_ptr = timeout
+        .as_mut()
+        .map(|t| t as *mut _)
+        .unwrap_or(ptr::null_mut());
+
+    syscall!(recvmmsg(
+        fd,
+        // SAFETY: `MMsgHdrMut` is `#[repr(transparent)]` and wraps a `libc::mmsghdr`
+        msgvec.as_mut_ptr() as *mut mmsghdr,
+        msgvec.len() as _,
+        flags as _,
+        timeout_ptr
+    ))
+    .map(|n| n as usize)
+}
+
 pub(crate) fn send(fd: Socket, buf: &[u8], flags: c_int) -> io::Result<usize> {
     syscall!(send(
         fd,
@@ -1120,6 +1156,27 @@ pub(crate) fn sendmsg(fd: Socket, msg: &MsgHdr<'_, '_, '_>, flags: c_int) -> io:
     syscall!(sendmsg(fd, &msg.inner, flags)).map(|n| n as usize)
 }
 
+#[cfg(all(feature = "all", any(target_os = "linux", target_os = "android",)))]
+/// This transmits all the messages in a single syscall
+pub(crate) fn sendmmsg(
+    fd: Socket,
+    msgvec: &mut [MMsgHdr<'_, '_, '_>],
+    flags: c_int,
+) -> io::Result<usize> {
+    if cfg!(target_env = "musl") {
+        debug_assert!(flags >= 0, "socket flags must be non-negative");
+    }
+
+    syscall!(sendmmsg(
+        fd,
+        // SAFETY: `MMsgHdr` is `#[repr(transparent)]` and wraps a `libc::mmsghdr`
+        msgvec.as_mut_ptr() as *mut mmsghdr,
+        msgvec.len() as _,
+        flags as _
+    ))
+    .map(|n| n as usize)
+}
+
 /// Wrapper around `getsockopt` to deal with platform specific timeouts.
 pub(crate) fn timeout_opt(fd: Socket, opt: c_int, val: c_int) -> io::Result<Option<Duration>> {
     unsafe { getsockopt(fd, opt, val).map(from_timeval) }
@@ -1158,6 +1215,26 @@ fn into_timeval(duration: Option<Duration>) -> libc::timeval {
             tv_sec: 0,
             tv_usec: 0,
         },
+    }
+}
+
+#[cfg(all(feature = "all", any(target_os = "linux", target_os = "android",)))]
+fn into_timespec(duration: Duration) -> libc::timespec {
+    // https://github.com/rust-lang/libc/issues/1848
+    #[cfg_attr(target_env = "musl", allow(deprecated))]
+    libc::timespec {
+        tv_sec: min(duration.as_secs(), libc::time_t::MAX as u64) as libc::time_t,
+        #[cfg(any(
+            all(target_arch = "x86_64", target_pointer_width = "32"),
+            target_pointer_width = "64"
+        ))]
+        tv_nsec: duration.subsec_nanos() as i64,
+
+        #[cfg(not(any(
+            all(target_arch = "x86_64", target_pointer_width = "32"),
+            target_pointer_width = "64"
+        )))]
+        tv_nsec: duration.subsec_nanos().clamp(0, i32::MAX as u32) as i32,
     }
 }
 
