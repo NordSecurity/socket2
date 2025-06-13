@@ -51,10 +51,10 @@ targets = [
 features = ["all"]
 
 [target."cfg(unix)".dependencies]
-libc = "0.2.171"
+libc = "0.2.172"
 
 [target.'cfg(windows)'.dependencies.windows-sys]
-version = "0.52"
+version = "0.59"
 features = [
   "Win32_Foundation",
   "Win32_Networking_WinSock",
@@ -66,3 +66,16 @@ features = [
 [features]
 # Enable all API, even ones not available on all OSs.
 all = []
+
+[package.metadata.cargo_check_external_types]
+allowed_external_types = [
+  # Referenced via a type alias.
+  "libc::c_int",
+  "libc::primitives::c_int", # libc::c_int isn't always detected.
+  "libc::socklen_t",
+  "libc::*::socklen_t", # libc::socklen_t isn't always detected.
+  "libc::sa_family_t",
+  "libc::*::sa_family_t", # libc::sa_family_t is always detected.
+  "windows_sys::Win32::Networking::WinSock::socklen_t",
+  "windows_sys::Win32::Networking::WinSock::ADDRESS_FAMILY",
+]

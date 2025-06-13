@@ -32,7 +32,7 @@ use windows_sys::Win32::Networking::WinSock::{
 };
 use windows_sys::Win32::System::Threading::INFINITE;
 
-use crate::{MsgHdr, RecvFlags, SockAddr, TcpKeepalive, Type};
+use crate::{MsgHdr, RecvFlags, SockAddr, SockAddrStorage, TcpKeepalive, Type};
 
 #[allow(non_camel_case_types)]
 pub(crate) type c_int = std::os::raw::c_int;
@@ -59,6 +59,9 @@ pub(crate) const SOCK_SEQPACKET: c_int =
 pub(crate) use windows_sys::Win32::Networking::WinSock::{
     IPPROTO_ICMP, IPPROTO_ICMPV6, IPPROTO_TCP, IPPROTO_UDP,
 };
+
+#[cfg(feature = "all")]
+pub(crate) use windows_sys::Win32::Networking::WinSock::TCP_KEEPCNT;
 // Used in `SockAddr`.
 pub(crate) use windows_sys::Win32::Networking::WinSock::{
     SOCKADDR as sockaddr, SOCKADDR_IN as sockaddr_in, SOCKADDR_IN6 as sockaddr_in6,
@@ -271,11 +274,21 @@ pub(crate) fn socket(family: c_int, mut ty: c_int, protocol: c_int) -> io::Resul
 }
 
 pub(crate) fn bind(socket: Socket, addr: &SockAddr) -> io::Result<()> {
-    syscall!(bind(socket, addr.as_ptr(), addr.len()), PartialEq::ne, 0).map(|_| ())
+    syscall!(
+        bind(socket, addr.as_ptr().cast::<sockaddr>(), addr.len()),
+        PartialEq::ne,
+        0
+    )
+    .map(|_| ())
 }
 
 pub(crate) fn connect(socket: Socket, addr: &SockAddr) -> io::Result<()> {
-    syscall!(connect(socket, addr.as_ptr(), addr.len()), PartialEq::ne, 0).map(|_| ())
+    syscall!(
+        connect(socket, addr.as_ptr().cast::<sockaddr>(), addr.len()),
+        PartialEq::ne,
+        0
+    )
+    .map(|_| ())
 }
 
 pub(crate) fn poll_connect(socket: &crate::Socket, timeout: Duration) -> io::Result<()> {
@@ -635,7 +648,7 @@ pub(crate) fn send_to(
             buf.as_ptr().cast(),
             min(buf.len(), MAX_BUF_LEN) as c_int,
             flags,
-            addr.as_ptr(),
+            addr.as_ptr().cast::<sockaddr>(),
             addr.len(),
         ),
         PartialEq::eq,
@@ -659,7 +672,7 @@ pub(crate) fn send_to_vectored(
             bufs.len().min(u32::MAX as usize) as u32,
             &mut nsent,
             flags as u32,
-            addr.as_ptr(),
+            addr.as_ptr().cast::<sockaddr>(),
             addr.len(),
             ptr::null_mut(),
             None,
@@ -727,17 +740,18 @@ fn into_ms(duration: Option<Duration>) -> u32 {
 }
 
 pub(crate) fn set_tcp_keepalive(socket: Socket, keepalive: &TcpKeepalive) -> io::Result<()> {
-    let mut keepalive = tcp_keepalive {
+    let mut tcp_keepalive = tcp_keepalive {
         onoff: 1,
         keepalivetime: into_ms(keepalive.time),
         keepaliveinterval: into_ms(keepalive.interval),
     };
+
     let mut out = 0;
     syscall!(
         WSAIoctl(
             socket,
             SIO_KEEPALIVE_VALS,
-            &mut keepalive as *mut _ as *mut _,
+            &mut tcp_keepalive as *mut _ as *mut _,
             size_of::<tcp_keepalive>() as _,
             ptr::null_mut(),
             0,
@@ -747,8 +761,18 @@ pub(crate) fn set_tcp_keepalive(socket: Socket, keepalive: &TcpKeepalive) -> io:
         ),
         PartialEq::eq,
         SOCKET_ERROR
-    )
-    .map(|_| ())
+    )?;
+    if let Some(retries) = keepalive.retries {
+        unsafe {
+            setsockopt(
+                socket,
+                WinSock::IPPROTO_TCP,
+                WinSock::TCP_KEEPCNT,
+                retries as c_int,
+            )?
+        }
+    }
+    Ok(())
 }
 
 /// Caller must ensure `T` is the correct type for `level` and `optname`.
@@ -900,11 +924,10 @@ pub(crate) fn original_dst_ipv6(socket: Socket) -> io::Result<SockAddr> {
 
 #[allow(unsafe_op_in_unsafe_fn)]
 pub(crate) fn unix_sockaddr(path: &Path) -> io::Result<SockAddr> {
-    // SAFETY: a `sockaddr_storage` of all zeros is valid.
-    let mut storage = unsafe { mem::zeroed::<sockaddr_storage>() };
+    let mut storage = SockAddrStorage::zeroed();
     let len = {
-        let storage: &mut windows_sys::Win32::Networking::WinSock::SOCKADDR_UN =
-            unsafe { &mut *(&mut storage as *mut sockaddr_storage).cast() };
+        let storage =
+            unsafe { storage.view_as::<windows_sys::Win32::Networking::WinSock::SOCKADDR_UN>() };
 
         // Windows expects a UTF-8 path here even though Windows paths are
         // usually UCS-2 encoded. If Rust exposed OsStr's Wtf8 encoded
@@ -929,9 +952,11 @@ pub(crate) fn unix_sockaddr(path: &Path) -> io::Result<SockAddr> {
         }
 
         storage.sun_family = crate::sys::AF_UNIX as sa_family_t;
+        // SAFETY: casting `[u8]` to `[i8]` is safe.
+        let b = unsafe { &*(bytes as *const [u8] as *const [i8]) };
         // `storage` was initialized to zero above, so the path is
         // already null terminated.
-        storage.sun_path[..bytes.len()].copy_from_slice(bytes);
+        storage.sun_path[..bytes.len()].copy_from_slice(b);
 
         let base = storage as *const _ as usize;
         let path = &storage.sun_path as *const _ as usize;

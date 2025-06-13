@@ -185,10 +185,7 @@ compile_error!("Socket2 doesn't support the compile target");
 
 use sys::c_int;
 
-pub use sockaddr::SockAddr;
-pub use socket::Socket;
-pub use sockref::SockRef;
-
+pub use sockaddr::{sa_family_t, socklen_t, SockAddr, SockAddrStorage};
 #[cfg(not(any(
     target_os = "haiku",
     target_os = "illumos",
@@ -197,6 +194,12 @@ pub use sockref::SockRef;
     target_os = "solaris",
 )))]
 pub use socket::InterfaceIndexOrAddress;
+pub use socket::Socket;
+pub use sockref::SockRef;
+#[cfg(all(feature = "all", target_os = "linux"))]
+pub use sys::CcidEndpoints;
+#[cfg(all(feature = "all", any(target_os = "linux", target_os = "android")))]
+pub use sys::SockFilter;
 
 /// Specification of the communication domain for a socket.
 ///
@@ -438,7 +441,6 @@ pub struct TcpKeepalive {
         target_os = "openbsd",
         target_os = "redox",
         target_os = "solaris",
-        target_os = "windows",
         target_os = "nto",
         target_os = "espidf",
         target_os = "vita",
@@ -467,7 +469,6 @@ impl TcpKeepalive {
                 target_os = "openbsd",
                 target_os = "redox",
                 target_os = "solaris",
-                target_os = "windows",
                 target_os = "nto",
                 target_os = "espidf",
                 target_os = "vita",
@@ -516,6 +517,7 @@ impl TcpKeepalive {
         target_os = "tvos",
         target_os = "watchos",
         target_os = "windows",
+        target_os = "cygwin",
     ))]
     pub const fn with_interval(self, interval: Duration) -> Self {
         Self {
@@ -543,6 +545,8 @@ impl TcpKeepalive {
             target_os = "netbsd",
             target_os = "tvos",
             target_os = "watchos",
+            target_os = "cygwin",
+            target_os = "windows",
         )
     ))]
     pub const fn with_retries(self, retries: u32) -> Self {
